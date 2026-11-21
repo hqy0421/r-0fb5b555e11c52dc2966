@@ -124,7 +124,11 @@ class PDF(Container):
     def close(self) -> None:
         self.flush_cache()
 
-        for page in self.pages:
+        # Only touch pages that were actually materialized; iter_pages() may
+        # have streamed through the document without retaining them, and
+        # closing must not force a full pass over a long PDF just to have
+        # something to close.
+        for page in getattr(self, "_pages", []):
             page.close()
 
         if not self.stream_is_external:
@@ -168,6 +172,45 @@ class PDF(Container):
             self._pages.append(p)
             doctop += p.height
         return self._pages
+
+    def iter_pages(self) -> Generator[Page, None, None]:
+        """
+        Yield this PDF's pages without retaining them.
+
+        If ``.pages`` has already been materialized, this simply iterates over
+        the cached list. Otherwise each page is created on demand and discarded
+        once the caller moves on, so long documents do not accumulate
+        per-page state. ``_iter_pages_are_transient`` tells callers whether the
+        pages they receive are safe to ``.close()``.
+        """
+        if hasattr(self, "_pages"):
+            self._iter_pages_are_transient = False
+            yield from self._pages
+            return
+
+        doctop: T_num = 0
+        pp = self.pages_to_parse
+        self._iter_pages_are_transient = True
+        try:
+            for i, page in enumerate(self._iter_raw_pages()):
+                page_number = i + 1
+                if pp is not None and page_number not in pp:
+                    continue
+                p = Page(self, page, page_number=page_number, initial_doctop=doctop)
+                doctop += p.height
+                yield p
+        finally:
+            self._iter_pages_are_transient = False
+
+    def _iter_raw_pages(self) -> Generator[PDFPage, None, None]:
+        gen = PDFPage.create_pages(self.doc)
+        while True:
+            try:
+                yield next(gen)
+            except StopIteration:
+                break
+            except Exception as e:  # pragma: nocover
+                raise PdfminerException(e)
 
     @property
     def objects(self) -> Dict[str, T_obj_list]:

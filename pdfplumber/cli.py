@@ -4,8 +4,9 @@ import json
 import sys
 from collections import defaultdict, deque
 from itertools import chain
-from typing import Any, DefaultDict, Dict, List
+from typing import Any, DefaultDict, Dict, List, Optional
 
+from .export import write_text_chunks, write_text_file
 from .pdf import PDF
 
 if len(sys.argv) == 1:
@@ -64,6 +65,27 @@ def parse_args(args_raw: List[str]) -> argparse.Namespace:
         "--indent", type=int, help="Indent level for JSON pretty-printing."
     )
 
+    parser.add_argument(
+        "--output",
+        "-o",
+        metavar="PATH",
+        help="Write to PATH instead of stdout. For CSV, extraction proceeds "
+        "page by page and resumes automatically after an interruption. "
+        'Use "-" for stdout.',
+    )
+
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Ignore any existing CSV checkpoints when writing to --output.",
+    )
+
+    parser.add_argument(
+        "--checkpoint-dir",
+        metavar="PATH",
+        help="Directory for CSV checkpoints. Defaults to <output>.parts.",
+    )
+
     args = parser.parse_args(args_raw)
     if args.pages is not None:
         args.pages = list(chain(*args.pages))
@@ -94,34 +116,75 @@ def add_text_to_mcids(pdf: PDF, data: List[Dict[str, Any]]) -> None:
 
 def main(args_raw: List[str] = sys.argv[1:]) -> None:
     args = parse_args(args_raw)
+    output: Optional[str] = args.output
 
     with PDF.open(args.infile, pages=args.pages, laparams=args.laparams) as pdf:
         if args.structure:
-            print(json.dumps(pdf.structure_tree, indent=args.indent))
+            text = json.dumps(pdf.structure_tree, indent=args.indent) + "\n"
+            _emit(text, output)
         elif args.structure_text:
             tree = pdf.structure_tree
             add_text_to_mcids(pdf, tree)
-            print(json.dumps(tree, indent=args.indent, ensure_ascii=False))
+            text = json.dumps(tree, indent=args.indent, ensure_ascii=False) + "\n"
+            _emit(text, output)
         elif args.format == "csv":
-            pdf.to_csv(
-                sys.stdout,
-                args.types,
-                precision=args.precision,
-                include_attrs=args.include_attrs,
-                exclude_attrs=args.exclude_attrs,
-            )
+            if output is None or output == "-":
+                pdf.to_csv(
+                    sys.stdout,
+                    args.types,
+                    precision=args.precision,
+                    include_attrs=args.include_attrs,
+                    exclude_attrs=args.exclude_attrs,
+                )
+            else:
+                pdf.to_csv_file(
+                    output,
+                    args.types,
+                    precision=args.precision,
+                    include_attrs=args.include_attrs,
+                    exclude_attrs=args.exclude_attrs,
+                    resume=not args.no_resume,
+                    checkpoint_dir=args.checkpoint_dir,
+                )
         elif args.format == "text":
-            for page in pdf.pages:
-                print(page.extract_text(layout=True))
+            if output is None or output == "-":
+                for page in pdf.pages:
+                    print(page.extract_text(layout=True))
+            else:
+                write_text_chunks(
+                    output,
+                    (
+                        page.extract_text(layout=True) + "\n"
+                        for page in pdf.iter_pages()
+                    ),
+                )
         else:
-            pdf.to_json(
-                sys.stdout,
-                args.types,
-                precision=args.precision,
-                include_attrs=args.include_attrs,
-                exclude_attrs=args.exclude_attrs,
-                indent=args.indent,
-            )
+            if output is None or output == "-":
+                pdf.to_json(
+                    sys.stdout,
+                    args.types,
+                    precision=args.precision,
+                    include_attrs=args.include_attrs,
+                    exclude_attrs=args.exclude_attrs,
+                    indent=args.indent,
+                )
+            else:
+                json_text = pdf.to_json(
+                    None,
+                    args.types,
+                    precision=args.precision,
+                    include_attrs=args.include_attrs,
+                    exclude_attrs=args.exclude_attrs,
+                    indent=args.indent,
+                )
+                write_text_file(output, json_text or "")
+
+
+def _emit(text: str, output: Optional[str]) -> None:
+    if output is None or output == "-":
+        sys.stdout.write(text)
+    else:
+        write_text_file(output, text)
 
 
 if __name__ == "__main__":

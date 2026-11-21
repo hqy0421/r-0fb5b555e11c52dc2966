@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file. The format is based on [Keep a Changelog](http://keepachangelog.com/).
 
+## [Unreleased]
+
+### Added
+- Add `PDF.to_csv_file(...)` / `Page.to_csv_file(...)` (and CLI `--output/-o`) for resumable, page-at-a-time CSV export of long documents. Rows are streamed to disk rather than accumulated in memory; each fully-written page is checkpointed under `<output>.parts` (or `--checkpoint-dir`), keyed by the PDF's SHA-256 plus the full extraction configuration, so an interrupted export resumes where it left off. Corrupt or incomplete pages are re-extracted, the header includes every attribute actually present in the output, and the target file is replaced atomically only once all pages are done. Existing `to_csv`/`to_json` interfaces are unchanged.
+
 ## [0.11.10] — 2026-06-14
 
 ### Changed

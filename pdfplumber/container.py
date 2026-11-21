@@ -2,19 +2,38 @@ import csv
 import json
 from io import StringIO
 from itertools import chain
-from typing import Any, Dict, List, Optional, Set, TextIO
+from typing import Any, Dict, Iterator, List, Optional, Set, TextIO
 
 from . import utils
 from ._typing import T_obj, T_obj_list
 from .convert import CSV_COLS_REQUIRED, CSV_COLS_TO_PREPEND, Serializer
+from .export import PathLike, to_csv_file
 
 
 class Container(object):
     cached_properties = ["_rect_edges", "_curve_edges", "_edges", "_objects"]
 
+    # True for containers whose iter_pages() creates throwaway Page objects
+    # (rather than yielding long-lived, caller-owned ones).
+    _iter_pages_are_transient = False
+
     @property
     def pages(self) -> Optional[List[Any]]:  # pragma: nocover
         raise NotImplementedError
+
+    def iter_pages(self) -> Iterator[Any]:
+        """
+        Yield this container's pages one at a time.
+
+        Unlike ``.pages``, implementations are encouraged not to materialize
+        the full list, so that per-page data can be released as soon as it has
+        been consumed.
+        """
+        pages = self.pages
+        if pages is None:
+            yield self
+        else:
+            yield from pages
 
     @property
     def objects(self) -> Dict[str, T_obj_list]:  # pragma: nocover
@@ -149,14 +168,12 @@ class Container(object):
         serialized = []
         fields: Set[str] = set()
 
-        pages = [self] if self.pages is None else self.pages
-
         serializer = Serializer(
             precision=precision,
             include_attrs=include_attrs,
             exclude_attrs=exclude_attrs,
         )
-        for page in pages:
+        for page in self.iter_pages():
             for t in object_types:
                 objs = getattr(page, t + "s")
                 if len(objs):
@@ -185,3 +202,37 @@ class Container(object):
             return stream.read()
         else:
             return None
+
+    def to_csv_file(
+        self,
+        path: PathLike,
+        object_types: Optional[List[str]] = None,
+        precision: Optional[int] = None,
+        include_attrs: Optional[List[str]] = None,
+        exclude_attrs: Optional[List[str]] = None,
+        resume: bool = True,
+        checkpoint_dir: Optional[PathLike] = None,
+    ) -> None:
+        """
+        Write this container's objects to ``path`` as CSV, one page at a time.
+
+        The output is identical to ``.to_csv(...)``, but rows are streamed to
+        disk rather than accumulated in memory. Each fully-written page is
+        checkpointed; if the process is interrupted, calling this method again
+        with the same PDF and configuration skips those pages. Corrupt or
+        incomplete checkpoints are re-extracted. ``path`` is replaced
+        atomically, and only after every page has been written.
+
+        Pass ``resume=False`` to ignore (and discard) any existing checkpoints.
+        Pass ``path="-"`` to write to stdout without checkpointing.
+        """
+        to_csv_file(
+            self,
+            path,
+            object_types=object_types,
+            precision=precision,
+            include_attrs=include_attrs,
+            exclude_attrs=exclude_attrs,
+            resume=resume,
+            checkpoint_dir=checkpoint_dir,
+        )

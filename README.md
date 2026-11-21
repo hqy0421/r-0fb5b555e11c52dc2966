@@ -52,6 +52,36 @@ The output will be a CSV containing info about every character, line, and rectan
 |`--types [list of object types to extract]`| Choices are `char`, `rect`, `line`, `curve`, `image`, `annot`, et cetera. Defaults to all available.|
 |`--laparams`| A JSON-formatted string (e.g., `'{"detect_vertical": true}'`) to pass to `pdfplumber.open(..., laparams=...)`.|
 |`--precision [integer]`| The number of decimal places to round floating-point numbers. Defaults to no rounding.|
+|`--output [path]`, `-o`| Write to a file instead of stdout. For `--format csv`, extraction proceeds page by page and resumes automatically after an interruption. Use `-` for stdout.|
+|`--no-resume`| Ignore (and discard) any existing CSV checkpoints in `--output`'s checkpoint directory.|
+|`--checkpoint-dir [path]`| Directory for CSV checkpoints. Defaults to `<output>.parts`.|
+
+### Resumable CSV export
+
+For long PDFs, `--format csv --output out.csv` streams one page at a time instead of building the whole CSV in memory. Each fully-written page is checkpointed to `<output>.parts`. If the process is interrupted (out of memory, Ctrl-C, a crash), re-running the same command with the same PDF and options skips the completed pages; truncated or corrupt checkpoints are re-extracted. The output file itself is replaced atomically, and only once every page has finished, so a partially written `out.csv` is never left behind.
+
+```sh
+# First run gets interrupted part-way through a large PDF ...
+pdfplumber big.pdf --format csv --output big.csv
+# ... and this second run continues where the first left off.
+pdfplumber big.pdf --format csv --output big.csv
+```
+
+Checkpoints are keyed to the PDF's *contents* and to every option that affects output (pages, object types, attribute filters, precision, layout parameters, pdfplumber/pdfminer versions). Changing any of them discards the old checkpoints rather than mixing incompatible pages. As with any export, the header includes every attribute present in the output — including attributes that only appear on later pages.
+
+The equivalent Python API is `PDF.to_csv_file(...)` (also available on `Page`):
+
+```python
+with pdfplumber.open("big.pdf") as pdf:
+    pdf.to_csv_file(
+        "big.csv",
+        precision=3,                 # same options as .to_csv(...)
+        exclude_attrs=["matrix"],
+        resume=True,                 # default
+        checkpoint_dir=None,         # default: "big.csv.parts"
+    )
+```
+
 
 ## Python library
 
@@ -92,11 +122,13 @@ The top-level `pdfplumber.PDF` class represents a single PDF and has two main pr
 |`.metadata`| A dictionary of metadata key/value pairs, drawn from the PDF's `Info` trailers. Typically includes "CreationDate," "ModDate," "Producer," et cetera.|
 |`.pages`| A list containing one `pdfplumber.Page` instance per page loaded.|
 
-... and also has the following method:
+... and also has the following methods:
 
 | Method | Description |
 |--------|-------------|
 |`.close()`| Calling this method calls `Page.close()` on each page, and also closes the file stream (except in cases when the stream is external, i.e., already opened and passed directly to `pdfplumber`). |
+|`.iter_pages()`| Yields the pages one at a time. If `.pages` has not already been accessed, pages are created on demand and can be released as you move past them, which keeps memory use flat on long documents.|
+|`.to_csv_file(path, ...)`| Writes the same CSV output as `.to_csv(...)` to `path`, on a page-by-page basis and with resumable checkpoints; see "[Resumable CSV export](#resumable-csv-export)".|
 
 ### The `pdfplumber.Page` class
 
